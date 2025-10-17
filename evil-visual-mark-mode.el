@@ -54,9 +54,19 @@ after completing the jump or canceling."
   :type 'boolean
   :group 'evil-visual-mark-mode)
 
+(defcustom evil-visual-mark-show-after-set-delay 1
+  "Time in seconds to display a mark after setting it with 'm'.
+Set to nil to not show marks after setting them."
+  :type '(choice (const :tag "Don't show after setting" nil)
+                 (number :tag "Seconds"))
+  :group 'evil-visual-mark-mode)
+
 
 (defvar evil-visual-mark-overlay-alist '()
   "List of evil visual mark overlays.")
+
+(defvar evil-visual-mark-hide-timer nil
+  "Timer to hide marks after setting them.")
 
 (defface evil-visual-mark-face
   '((t (:foreground "white"
@@ -100,7 +110,9 @@ This function is called when enabling the evil-visual-marker-mode."
 
                   (setf (car new-item) (cons letter buffer))
                   (setf (cdr new-item) new-overlay)
-
+                  
+                  ;; Initialize overlay with empty before-string (hidden)
+                  (overlay-put new-overlay 'before-string "")
 
                   new-item))))))
 
@@ -118,8 +130,17 @@ This function is called on `evil-normal-state-exit-hook.'"
   "Show all evil markers.
 
 This function is called on `evil-normal-state-entry-hook'."
-  (--each evil-visual-mark-overlay-alist
-    (evil-visual-mark-overlay-put (car (car it)) (cdr it))))
+  (let ((current-buf (current-buffer)))
+    (--each evil-visual-mark-overlay-alist
+      (let* ((key (car it))
+             (char (car key))
+             (buffer (cdr key))
+             (overlay (cdr it)))
+        ;; Only show marks that are in the current buffer
+        ;; This includes both local marks and global marks that point to this buffer
+        (when (and overlay
+                   (eq (overlay-buffer overlay) current-buf))
+          (evil-visual-mark-overlay-put char overlay))))))
 
 (defun evil-visual-mark-render ()
   "Render for the first time the evil mark list.
@@ -132,6 +153,11 @@ This function is called on the initialization of
   "Remove all overlays that were created by this mode.
 
 This function is called when disabling `evil-visual-mark-mode'"
+  ;; Cancel any pending timer
+  (when evil-visual-mark-hide-timer
+    (cancel-timer evil-visual-mark-hide-timer)
+    (setq evil-visual-mark-hide-timer nil))
+  
   (-each evil-visual-mark-overlay-alist
     (lambda (it) (delete-overlay (cdr it))))
   (setq evil-visual-mark-overlay-alist '()))
@@ -174,8 +200,22 @@ the result of calling that function."
       (when old-overlay
         (delete-overlay old-overlay))
 
-      ;; add new overlay to view
-      (evil-visual-mark-overlay-put char new-overlay))))
+      ;; Initialize new overlay as hidden
+      (overlay-put new-overlay 'before-string "")
+
+      ;; Show mark temporarily after setting it
+      (when evil-visual-mark-show-after-set-delay
+        (evil-visual-mark-overlay-put char new-overlay)
+        
+        ;; Cancel any existing timer
+        (when evil-visual-mark-hide-timer
+          (cancel-timer evil-visual-mark-hide-timer)
+          (setq evil-visual-mark-hide-timer nil))
+        
+        ;; Set timer to hide the mark
+        (setq evil-visual-mark-hide-timer
+              (run-with-timer evil-visual-mark-show-after-set-delay nil
+                              #'evil-visual-mark-hide))))))
 
 (defun evil-set-marker--visual-mark-update (orig-fun &rest args)
   "Listens when an evil marker is being created/updated.
@@ -191,15 +231,26 @@ This updates the overlays that show the evil marks on buffer."
 This deletes the corresponding overlays."
   (evil-visual-mark-render))
 
-(defun evil-goto-mark--visual-mark-show (orig-fun &rest args)
-  "Show marks before jumping to a mark with ' or `."
-  ;; Show marks before executing the command
-  (evil-visual-mark-show)
-  ;; Execute the original command (this will read the mark char and jump)
-  (unwind-protect
-      (apply orig-fun args)
-    ;; Hide marks after command completes (success or failure)
-    (evil-visual-mark-hide)))
+(defun evil-visual-mark-pre-command-hook ()
+  "Show marks before goto-mark commands."
+  (when (and evil-visual-mark-show-before-jump
+             (memq this-command '(evil-goto-mark evil-goto-mark-line)))
+    ;; Cancel any pending timer
+    (when evil-visual-mark-hide-timer
+      (cancel-timer evil-visual-mark-hide-timer)
+      (setq evil-visual-mark-hide-timer nil))
+    
+    ;; Show marks (don't repopulate, just show existing overlays)
+    (evil-visual-mark-show)
+    
+    ;; Add post-command hook to hide them after
+    (add-hook 'post-command-hook #'evil-visual-mark-post-command-hook nil t)))
+
+(defun evil-visual-mark-post-command-hook ()
+  "Hide marks after goto-mark commands complete."
+  (when evil-visual-mark-show-before-jump
+    (evil-visual-mark-hide)
+    (remove-hook 'post-command-hook #'evil-visual-mark-post-command-hook t)))
 
 ;;;###autoload
 (define-minor-mode evil-visual-mark-mode
@@ -209,14 +260,13 @@ This deletes the corresponding overlays."
       (progn
         (advice-add 'evil-set-marker :around #'evil-set-marker--visual-mark-update)
         (advice-add 'evil-delete-marks :after #'evil-delete-marks--visual-mark-update)
-        (advice-add 'evil-goto-mark :around #'evil-goto-mark--visual-mark-show)
-        (advice-add 'evil-goto-mark-line :around #'evil-goto-mark--visual-mark-show)
+        (add-hook 'pre-command-hook #'evil-visual-mark-pre-command-hook)
         (evil-visual-mark-render))
     (progn
       (advice-remove 'evil-set-marker #'evil-set-marker--visual-mark-update)
       (advice-remove 'evil-delete-marks #'evil-delete-marks--visual-mark-update)
-      (advice-remove 'evil-goto-mark #'evil-goto-mark--visual-mark-show)
-      (advice-remove 'evil-goto-mark-line #'evil-goto-mark--visual-mark-show)
+      (remove-hook 'pre-command-hook #'evil-visual-mark-pre-command-hook)
+      (remove-hook 'post-command-hook #'evil-visual-mark-post-command-hook)
       (evil-visual-mark-cleanup))))
 
 
