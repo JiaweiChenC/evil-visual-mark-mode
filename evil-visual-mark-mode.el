@@ -47,19 +47,16 @@
   :type '(repeat string)
   :group 'evil-visual-mark-mode)
 
-(defcustom evil-visual-mark-hide-delay 2
-  "Time in seconds to display marks after navigating to them.
-Set to nil to keep marks visible until next command."
-  :type '(choice (const :tag "Hide after next command" nil)
-                 (number :tag "Seconds"))
+(defcustom evil-visual-mark-show-before-jump t
+  "Whether to show marks before jumping to them.
+When non-nil, marks will be displayed when you press ' or ` and hidden
+after completing the jump or canceling."
+  :type 'boolean
   :group 'evil-visual-mark-mode)
 
 
 (defvar evil-visual-mark-overlay-alist '()
   "List of evil visual mark overlays.")
-
-(defvar evil-visual-mark-hide-timer nil
-  "Timer to hide marks after navigation.")
 
 (defface evil-visual-mark-face
   '((t (:foreground "white"
@@ -131,39 +128,10 @@ This function is called on the initialization of
 `evil-visual-mark-mode'"
   (evil-visual-mark-populate-overlay-alist))
 
-(defun evil-visual-mark-show-temporarily ()
-  "Show marks temporarily when navigating to them."
-  (evil-visual-mark-show)
-  
-  ;; Cancel any existing timer
-  (when evil-visual-mark-hide-timer
-    (cancel-timer evil-visual-mark-hide-timer)
-    (setq evil-visual-mark-hide-timer nil))
-  
-  ;; Set up new timer to hide marks
-  (when evil-visual-mark-hide-delay
-    (setq evil-visual-mark-hide-timer
-          (run-with-timer evil-visual-mark-hide-delay nil
-                          #'evil-visual-mark-hide)))
-  
-  ;; If no delay is set, hide after next command
-  (unless evil-visual-mark-hide-delay
-    (add-hook 'pre-command-hook #'evil-visual-mark-hide-after-command)))
-
-(defun evil-visual-mark-hide-after-command ()
-  "Hide marks after a command is executed."
-  (evil-visual-mark-hide)
-  (remove-hook 'pre-command-hook #'evil-visual-mark-hide-after-command))
-
 (defun evil-visual-mark-cleanup ()
   "Remove all overlays that were created by this mode.
 
 This function is called when disabling `evil-visual-mark-mode'"
-  ;; Cancel any pending timer
-  (when evil-visual-mark-hide-timer
-    (cancel-timer evil-visual-mark-hide-timer)
-    (setq evil-visual-mark-hide-timer nil))
-  
   (-each evil-visual-mark-overlay-alist
     (lambda (it) (delete-overlay (cdr it))))
   (setq evil-visual-mark-overlay-alist '()))
@@ -224,9 +192,14 @@ This deletes the corresponding overlays."
   (evil-visual-mark-render))
 
 (defun evil-goto-mark--visual-mark-show (orig-fun &rest args)
-  "Show marks temporarily when navigating to a mark with ' or `."
-  (evil-visual-mark-show-temporarily)
-  (apply orig-fun args))
+  "Show marks before jumping to a mark with ' or `."
+  ;; Show marks before executing the command
+  (evil-visual-mark-show)
+  ;; Execute the original command (this will read the mark char and jump)
+  (unwind-protect
+      (apply orig-fun args)
+    ;; Hide marks after command completes (success or failure)
+    (evil-visual-mark-hide)))
 
 ;;;###autoload
 (define-minor-mode evil-visual-mark-mode
